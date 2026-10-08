@@ -113,7 +113,8 @@ observable here, and the benchmark cannot force platform isolate placement.
 
 `ingressColo` / `ingressRay` describe the incoming Worker request, not necessarily
 the executing DO's location. Upstream `cf-ray`, `cf-aig-log-id`, `x-request-id`, and
-cache status are captured when exposed; absent headers remain `null`. Usage events,
+cache status are captured when exposed; the binding's `aiGatewayLogId` supplies its
+log ID when transport headers are omitted. Other absent headers remain `null`. Usage events,
 including provider cached-token counts when supplied, are retained. **Bypassing
 Gateway response caching does not disable provider prompt caching.** Confirm
 credential selection, routing, retries, and cache behavior in Gateway logs.
@@ -136,6 +137,37 @@ authentication, request parity, and paired statistics without model calls.
 `check` bundles the Worker using a Wrangler deployment dry run. Neither check proves
 deployed latency. Run the benchmark on deployed Cloudflare infrastructure; local
 `wrangler dev` does not reproduce the real binding, routing, or isolate costs.
+
+## Deployed verification: October 8, 2026
+
+Tested against the `development` gateway with `gpt-4.1-mini`: 20 alternating
+pairs, three calls per object, 120 model requests, 18:14–18:17 UTC. The request
+arrived through SEA; this is the ingress location, not proof of DO placement.
+
+| Median inside the object | Binding | HTTPS |
+| --- | ---: | ---: |
+| First call: response headers | 1,821.5 ms | 757.5 ms |
+| First call: first text | 1,828.5 ms | 759.5 ms |
+| Subsequent calls: first text | 773.5 ms | 773 ms |
+
+The median **within-pair** first-call difference was **+1,033.5 ms to headers**
+and **+1,028.5 ms to first text**. This differs from subtracting the two path
+medians. The binding was slower in 19 of 20 pairs. All 19 first binding calls
+with isolate invocation ordinal 1 were slower; their median first-text difference
+was +1,045 ms. The one negative pair reused an isolate with ordinal 4. Subsequent
+paired first-text differences had median −22.5 ms (binding minus HTTPS).
+
+Gateway logs were matched to all 120 requests using object/path/call metadata:
+all were HTTP 200, uncached, and routed to `openai/gpt-4.1-mini`. All usage events
+reported zero provider cached tokens. The penalty appeared in both path orders.
+The live run exposed no binding log ID through headers or `aiGatewayLogId`;
+Gateway metadata supplied the correlation instead.
+
+This reproduces the reported **first-use latency pattern**, with a larger observed
+penalty than the historical +630/+588 ms report. The historical exact model and
+payload were not available, so this is an independent reproduction rather than an
+exact rerun. It does not identify which binding, routing, or connection operation
+causes the delay. Raw results remain under the ignored `results/` directory.
 
 ## References
 

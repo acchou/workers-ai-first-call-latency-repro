@@ -65,7 +65,12 @@ test('endpoint refuses unauthenticated calls before allocating objects', async (
 test('binding and HTTPS use identical payload, gateway, caching, and attempt settings', async () => {
   let bindingCall, httpsCall;
   const env = { ACCOUNT_ID: 'a'.repeat(32), GATEWAY_ID: 'test-gateway', AIG_TOKEN: 'secret',
-    AI: { async run(...args) { bindingCall = args; return streamResponse(); } } };
+    AI: { aiGatewayLogId: 'binding-log', async run(...args) {
+      bindingCall = args;
+      const response = streamResponse();
+      response.headers.delete('cf-aig-log-id');
+      return response;
+    } } };
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (...args) => { httpsCall = args; return streamResponse(); };
   try {
@@ -73,7 +78,9 @@ test('binding and HTTPS use identical payload, gateway, caching, and attempt set
       const object = new LatencySample({}, env);
       const response = await object.fetch(new Request('https://internal/', { method: 'POST',
         body: JSON.stringify({ path, model: 'gpt-4.1-mini', calls: 1, objectId: 'test-object' }) }));
-      assert.equal((await response.json()).results[0].ok, true);
+      const sample = await response.json();
+      assert.equal(sample.results[0].ok, true);
+      assert.equal(sample.results[0].trace['cf-aig-log-id'], path === 'binding' ? 'binding-log' : 'test-log');
       assert.equal((await object.fetch(new Request('https://internal/'))).status, 409);
     }
   } finally { globalThis.fetch = originalFetch; }

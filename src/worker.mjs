@@ -1,6 +1,6 @@
 import { measure } from './measure.mjs';
 
-const isolateId = crypto.randomUUID();
+let isolateId;
 let isolateBindingCalls = 0;
 const json = (body, status = 200) => Response.json(body, {
   status, headers: { 'cache-control': 'no-store' }
@@ -36,6 +36,7 @@ export default {
 
 export class LatencySample {
   constructor(_ctx, env) {
+    isolateId ??= crypto.randomUUID();
     this.env = env;
     this.instanceId = crypto.randomUUID();
     this.used = false;
@@ -72,6 +73,10 @@ export class LatencySample {
             body: JSON.stringify(payload), signal: AbortSignal.timeout(60000)
           });
       const timing = await measure(invoke);
+      if (path === 'binding') {
+        // The binding can omit transport headers while exposing the log ID here.
+        timing.trace['cf-aig-log-id'] ??= env.AI.aiGatewayLogId ?? null;
+      }
       results.push({ call, bindingIsolateInvocation, ...timing });
       // A failed first invocation still changes initialization state. Do not label
       // any following call as a successful first-call sample.
