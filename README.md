@@ -167,7 +167,12 @@ This reproduces the reported **first-use latency pattern**, with a larger observ
 penalty than the historical +630/+588 ms report. The historical exact model and
 payload were not available, so this is an independent reproduction rather than an
 exact rerun. It does not identify which binding, routing, or connection operation
-causes the delay. Raw results remain under the ignored `results/` directory.
+causes the delay. [Verified timings and all 120 matched Gateway log records](evidence/verified-2026-10-08.json)
+are included in this repository, with the account ID and deployed Worker URL
+replaced by placeholders. Request IDs, isolate IDs, timestamps, and timing data
+are preserved for investigation. The original local results remain under the
+ignored `results/` directory. The temporary benchmark Worker was removed after
+verification.
 
 ## References
 
