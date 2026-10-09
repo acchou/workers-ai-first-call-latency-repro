@@ -195,6 +195,42 @@ are preserved for investigation. The original local results remain under the
 ignored `results/` directory. The temporary benchmark Worker was removed after
 verification.
 
+## Deployed verification: October 9, 2026 (Claude)
+
+In response to Cloudflare support case 02339915, tested Haiku 4.5 through the
+same `development` gateway: 20 alternating pairs, three calls per object,
+120 requests, **15:56:49–15:58:27 UTC**. Both paths reported the same provider
+snapshot, `claude-haiku-4-5-20251001`, and native Anthropic Messages streams.
+
+| Median inside the object | Binding | HTTPS |
+| --- | ---: | ---: |
+| First call: response headers | 1,057 ms | 571 ms |
+| First call: first text | 1,057 ms | 571 ms |
+| Subsequent calls: first text | 590 ms | 544 ms |
+
+The median **within-pair** first-call difference was **+479.5 ms to headers and
+first text**; the paired first-text p90 difference was +1,128 ms. The binding was
+slower in **18 of 20 pairs**, including samples in both path orders. All 20 first
+binding samples had observed isolate invocation ordinal 1. Subsequent paired
+first-text differences had median **+25.5 ms** across 40 paired calls.
+
+All 120 requests matched uniquely to Gateway logs: HTTP 200, provider Anthropic,
+uncached. Every stream reported zero cache-read and cache-creation input tokens.
+The shared native payload used the dated snapshot ID; the binding selector used
+Cloudflare’s `anthropic/claude-haiku-4.5` catalog ID. The preliminary alias probes
+failed (hyphenated alias on binding: HTTP 500; dotted alias on HTTPS: HTTP 404)
+and are excluded from these 20 successful pairs.
+
+The Worker version was `3d39f7ac-b56b-4313-ba00-4567739a9c69`; incoming requests
+used LAX ingress, which does not establish the executing DO’s location.
+Binding upstream trace headers were absent, so object/path/call metadata matched
+the Gateway log IDs. This extends the observed first-use pattern to a non-GPT
+provider; it does not establish which initialization operation causes the delay.
+The temporary benchmark Worker was removed after verification.
+
+[Raw timings, model/cache usage, version, and all 120 matched Gateway log IDs](evidence/verified-2026-10-09-claude.json)
+are included with the account ID and Worker URL replaced by placeholders.
+
 ## References
 
 - [Workers binding and third-party models](https://developers.cloudflare.com/ai-gateway/usage/worker-binding-methods/)
