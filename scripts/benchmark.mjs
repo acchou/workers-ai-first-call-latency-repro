@@ -1,10 +1,12 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { summarize } from './stats.mjs';
+import { modelConfig } from '../src/model.mjs';
 
 const [baseUrl, model = 'gpt-4.1-mini', pairsArg = '20', callsArg = '3'] = process.argv.slice(2);
 const token = process.env.BENCHMARK_TOKEN;
 const count = Number(pairsArg);
 const calls = Number(callsArg);
+const { provider, bindingModel } = modelConfig(model);
 if (!baseUrl || !token || !Number.isInteger(count) || count < 1 || count > 100 ||
     !Number.isInteger(calls) || calls < 1 || calls > 5) {
   console.error('Usage: BENCHMARK_TOKEN=... npm run benchmark -- <worker-url> [model] [pairs:1..100] [calls:1..5]');
@@ -14,7 +16,7 @@ const url = new URL('/sample', baseUrl);
 if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) {
   throw new Error('Use HTTPS for deployed Workers');
 }
-const run = { startedAt: new Date().toISOString(), workerUrl: url.origin, model, calls,
+const run = { startedAt: new Date().toISOString(), workerUrl: url.origin, model, provider, bindingModel, calls,
   methodology: 'Separate new DOs per path; alternating path order; sequential samples; no client retries', pairs: [] };
 await mkdir('results', { recursive: true });
 const filename = `results/${run.startedAt.replace(/[:.]/g, '-')}.json`;

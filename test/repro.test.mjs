@@ -3,6 +3,75 @@ import assert from 'node:assert/strict';
 import { measure, sseParser } from '../src/measure.mjs';
 import { distribution, summarize } from '../scripts/stats.mjs';
 import worker, { LatencySample } from '../src/worker.mjs';
+import { modelConfig } from '../src/model.mjs';
+
+function anthropicResponse() {
+  const events = [
+    { type: 'message_start', message: { model: 'claude-haiku-4-5-20251001', usage: { input_tokens: 20,
+      cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 } } },
+    { type: 'content_block_start', content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'ignore' } },
+    { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hi 🌎' } },
+    { type: 'message_delta', usage: { output_tokens: 4 } },
+    { type: 'message_stop' }
+  ];
+  const bytes = new TextEncoder().encode(events.map(event =>
+    `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+  return new Response(new ReadableStream({ start(controller) {
+    for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
+    controller.close();
+  } }), { headers: { 'content-type': 'text/event-stream' } });
+}
+
+test('Anthropic first text ignores start/thinking events and merges cumulative usage', async () => {
+  let time = 0;
+  const result = await measure(async () => anthropicResponse(), () => ++time);
+  assert.equal(result.ok, true);
+  assert.equal(result.streamFormat, 'anthropic-messages');
+  assert.equal(result.responseModel, 'claude-haiku-4-5-20251001');
+  assert.equal(result.textCharacters, 'Hi 🌎'.length);
+  assert.ok(result.firstTextMs > result.firstChunkMs);
+  assert.deepEqual(result.usage, { input_tokens: 20, cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0, output_tokens: 4 });
+});
+
+test('model selection preserves bare OpenAI IDs and rejects unimplemented providers', () => {
+  assert.deepEqual(modelConfig('gpt-4.1-mini'), modelConfig('openai/gpt-4.1-mini'));
+  for (const model of ['google/gemini', 'anthropic/../../private', '', null]) {
+    assert.throws(() => modelConfig(model));
+  }
+});
+
+test('Anthropic binding and HTTPS share native payload and capture the Worker version', async () => {
+  let bindingCall, httpsCall;
+  const env = { ACCOUNT_ID: 'a'.repeat(32), GATEWAY_ID: 'test-gateway', AIG_TOKEN: 'secret',
+    VERSION: { id: 'test-version' }, AI: { async run(...args) {
+      bindingCall = args; return anthropicResponse();
+    } } };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (...args) => { httpsCall = args; return anthropicResponse(); };
+  try {
+    for (const path of ['binding', 'https']) {
+      const object = new LatencySample({}, env);
+      const response = await object.fetch(new Request('https://internal/', { method: 'POST',
+        body: JSON.stringify({ path, model: 'anthropic/claude-haiku-4-5', calls: 1, objectId: 'anthropic-object' }) }));
+      const sample = await response.json();
+      assert.equal(sample.results[0].ok, true);
+      assert.equal(sample.workerVersion, 'test-version');
+    }
+  } finally { globalThis.fetch = originalFetch; }
+  assert.equal(bindingCall[0], 'anthropic/claude-haiku-4.5');
+  assert.equal(bindingCall[1].model, 'claude-haiku-4-5-20251001');
+  assert.deepEqual(bindingCall[1], JSON.parse(httpsCall[1].body));
+  assert.equal(bindingCall[1].max_tokens, 32);
+  assert.ok(!('stream_options' in bindingCall[1]));
+  assert.equal(bindingCall[2].extraHeaders['anthropic-version'], '2023-06-01');
+  assert.equal(httpsCall[1].headers['anthropic-version'], '2023-06-01');
+  assert.equal(httpsCall[1].headers['cf-aig-skip-cache'], 'true');
+  assert.equal(httpsCall[1].headers['cf-aig-max-attempts'], '1');
+  assert.ok(!('x-api-key' in httpsCall[1].headers));
+  assert.ok(httpsCall[0].endsWith('/anthropic/v1/messages'));
+});
 
 function streamResponse() {
   const fragments = [

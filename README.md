@@ -1,7 +1,7 @@
 # First Workers AI binding call latency
 
 A standalone reproducer comparing **`env.AI.run()`** with **provider-native HTTPS
-through the same Cloudflare AI Gateway**, using the same OpenAI streaming request.
+through the same Cloudflare AI Gateway**, using the same provider-native streaming request (OpenAI or Anthropic).
 No AI SDK, application services, KV, D1, R2, or application storage operations are involved.
 
 The motivating observation was additional first-call latency through the binding,
@@ -14,8 +14,8 @@ Set the model argument to the exact model under investigation.
 
 Requires Node.js 22+, a Cloudflare account supporting Durable Objects, and an
 **existing** AI Gateway in the same account. Both paths must use the same provider
-credentials: configure an OpenAI BYOK key under the gateway's **`default` alias**,
-or use Unified Billing for both. Do not supply a separate OpenAI key on the HTTPS
+credentials: configure the tested provider’s BYOK key under the gateway's **`default` alias**,
+or use Unified Billing for both. Do not supply a separate provider key on the HTTPS
 path. Enable Gateway logging and remove gateway-level retry/fallback/routing rules
 that could override this comparison. This code uses a provider model directly.
 
@@ -54,10 +54,27 @@ export BENCHMARK_TOKEN
 npm run benchmark -- https://workers-ai-first-call-latency-repro.YOUR_SUBDOMAIN.workers.dev gpt-4.1-mini 20 3
 ```
 
-Arguments are Worker URL, bare OpenAI model ID, number of pairs, and calls per object.
-Start with `2 2` to verify configuration, then collect a larger run. Use a model
+Arguments are Worker URL, model ID, number of pairs, and calls per object. Bare IDs
+use OpenAI for compatibility; explicit IDs use `openai/<model>` or `anthropic/<model>`.
+For Claude, for example:
+
+```sh
+npm run benchmark -- https://workers-ai-first-call-latency-repro.YOUR_SUBDOMAIN.workers.dev anthropic/claude-haiku-4.5 20 3
+```
+
+Anthropic uses the same Messages payload on both paths (`max_tokens: 32`,
+streaming, no prompt-cache controls), with `anthropic-version: 2023-06-01` and
+HTTPS `/anthropic/v1/messages`. For Haiku 4.5, the binding catalog ID is `anthropic/claude-haiku-4.5`, while
+the identical payload on both paths uses Anthropic’s native snapshot ID
+`claude-haiku-4-5-20251001`. The reproducer explicitly maps the dotted, hyphenated,
+and dated Haiku IDs to this pair. Other Anthropic IDs pass through unchanged and
+must be accepted by both routes. `responseModel` records the model reported in
+the stream; confirm that both paths resolve to the same snapshot in the evidence.
+This ID mapping is necessary because the hyphenated alias fails on the binding
+and the dotted catalog alias fails on the native HTTPS endpoint.
+Start with `2 2` to verify configuration, then collect a larger run. For OpenAI, use a model
 that supports OpenAI Chat Completions, streaming, and `max_completion_tokens`.
-This minimal version uses `/chat/completions`, not `/responses`; models that require
+The OpenAI path uses `/chat/completions`, not `/responses`; models that require
 the Responses API need a corresponding payload, binding prefix, and parser change.
 
 Each sample runs inside a **new Durable Object dedicated to one path**. The client
@@ -95,10 +112,13 @@ Timings start immediately before invoking `AI.run()` or `fetch()` inside the DO:
 | --- | --- |
 | `headersMs` | Time until the invocation returns a raw `Response` |
 | `firstChunkMs` | Time until the first nonempty response-body chunk |
-| `firstTextMs` | Time until a complete SSE event with nonempty `choices[].delta.content` |
+| `firstTextMs` | Time until a complete SSE event with nonempty `choices[].delta.content` (OpenAI) or `content_block_delta.delta.text` of type `text_delta` (Anthropic) |
 | `totalMs` | Time until the entire stream is consumed or the call fails |
 
-Role-only events are not text. SSE is decoded across chunk and UTF-8 boundaries.
+Role-only, message-start, empty block-start, and thinking events are not text.
+Anthropic input/cache usage from `message_start` is merged with cumulative output
+usage from `message_delta`; it is not replaced by the final output count.
+`streamFormat` records the observed response wire format. SSE is decoded across chunk and UTF-8 boundaries.
 These measurements exclude client network time and Worker-to-DO admission time.
 Workers clocks advance with I/O rather than serving as CPU profilers; timing values
 are appropriate for request waits, not for attributing individual setup operations.
@@ -111,6 +131,7 @@ calls in the same isolate. Inspect these fields before describing results as
 fresh-isolate evidence. Infrastructure initialization outside this module is not
 observable here, and the benchmark cannot force platform isolate placement.
 
+`workerVersion` records the deployed version via a Version Metadata binding.
 `ingressColo` / `ingressRay` describe the incoming Worker request, not necessarily
 the executing DO's location. Upstream `cf-ray`, `cf-aig-log-id`, `x-request-id`, and
 cache status are captured when exposed; the binding's `aiGatewayLogId` supplies its
@@ -177,6 +198,8 @@ verification.
 ## References
 
 - [Workers binding and third-party models](https://developers.cloudflare.com/ai-gateway/usage/worker-binding-methods/)
+- [Anthropic provider-native endpoints](https://developers.cloudflare.com/ai-gateway/usage/providers/anthropic/)
+- [Anthropic streaming events](https://platform.claude.com/docs/en/build-with-claude/streaming)
 - [OpenAI provider-native endpoints](https://developers.cloudflare.com/ai-gateway/usage/providers/openai/)
 - [Gateway retry configuration](https://developers.cloudflare.com/ai-gateway/configuration/request-handling/)
 - [Gateway authentication](https://developers.cloudflare.com/ai-gateway/configuration/authentication/)

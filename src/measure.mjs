@@ -26,7 +26,8 @@ export async function measure(invoke, now = () => performance.now()) {
   const start = now();
   const result = {
     startedAt, ok: false, headersMs: null, firstChunkMs: null, firstTextMs: null,
-    totalMs: null, status: null, trace: {}, usage: null, textCharacters: 0
+    totalMs: null, status: null, trace: {}, usage: null, textCharacters: 0, streamFormat: null,
+    responseModel: null
   };
   try {
     const response = await invoke();
@@ -47,15 +48,24 @@ export async function measure(invoke, now = () => performance.now()) {
     if (!response.body) throw new Error('Missing streaming body');
     const parse = sseParser(event => {
       if (event.error) throw new Error('Upstream error event');
-      if (event.usage) result.usage = event.usage;
+      result.responseModel ??= event.message?.model ?? event.model ?? null;
+      if (event.message?.usage) result.usage = { ...result.usage, ...event.message.usage };
+      if (event.usage) result.usage = { ...result.usage, ...event.usage };
+      if (event.type === 'message_start') result.streamFormat = 'anthropic-messages';
+      if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+        recordText(event.delta.text);
+      }
       for (const choice of event.choices ?? []) {
-        const text = choice.delta?.content;
-        if (typeof text === 'string' && text.length) {
-          result.firstTextMs ??= now() - start;
-          result.textCharacters += text.length;
-        }
+        result.streamFormat = 'openai-chat-completions';
+        recordText(choice.delta?.content);
       }
     });
+    function recordText(text) {
+      if (typeof text === 'string' && text.length) {
+        result.firstTextMs ??= now() - start;
+        result.textCharacters += text.length;
+      }
+    }
     const decoder = new TextDecoder();
     const reader = response.body.getReader();
     try {

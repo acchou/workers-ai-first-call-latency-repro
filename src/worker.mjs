@@ -1,4 +1,5 @@
 import { measure } from './measure.mjs';
+import { modelConfig } from './model.mjs';
 
 let isolateId;
 let isolateBindingCalls = 0;
@@ -20,10 +21,10 @@ export default {
     let config;
     try { config = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
     const { path, model = 'gpt-4.1-mini', calls = 3 } = config;
-    if (!['binding', 'https'].includes(path) || !Number.isInteger(calls) || calls < 1 || calls > 5 ||
-        typeof model !== 'string' || !/^[a-zA-Z0-9._-]{1,100}$/.test(model)) {
-      return json({ error: 'Expected path binding|https, calls 1..5, and a bare OpenAI model ID' }, 400);
+    if (!['binding', 'https'].includes(path) || !Number.isInteger(calls) || calls < 1 || calls > 5) {
+      return json({ error: 'Expected path binding|https and calls 1..5' }, 400);
     }
+    try { modelConfig(model); } catch { return json({ error: 'Use a bare OpenAI model ID or openai|anthropic/model' }, 400); }
     // One new object for one path. Neither path can warm the other's object.
     const id = env.SAMPLES.newUniqueId();
     const forwarded = new Request('https://sample.internal/', {
@@ -47,22 +48,20 @@ export class LatencySample {
     const config = await request.json();
     const { path, model, calls } = config;
     const env = this.env;
-    const endpoint = `https://gateway.ai.cloudflare.com/v1/${env.ACCOUNT_ID}/${encodeURIComponent(env.GATEWAY_ID)}/openai/chat/completions`;
-    const payload = {
-      model, messages: [{ role: 'user', content: 'Reply with exactly these words: Hello from this latency test.' }],
-      stream: true, stream_options: { include_usage: true }, max_completion_tokens: 32
-    };
+    const { provider, bindingModel, endpointPath, payload, headers: providerHeaders } = modelConfig(model);
+    const endpoint = `https://gateway.ai.cloudflare.com/v1/${env.ACCOUNT_ID}/${encodeURIComponent(env.GATEWAY_ID)}/${endpointPath}`;
     const results = [];
     for (let call = 1; call <= calls; call++) {
       const metadata = { repro: 'workers-ai-first-call-latency', objectId: config.objectId, path, call };
       const headers = {
+        ...providerHeaders,
         'content-type': 'application/json',
         'cf-aig-skip-cache': 'true', 'cf-aig-max-attempts': '1',
         'cf-aig-collect-log': 'true', 'cf-aig-metadata': JSON.stringify(metadata)
       };
       const bindingIsolateInvocation = path === 'binding' ? ++isolateBindingCalls : null;
       const invoke = path === 'binding'
-        ? () => env.AI.run(`openai/${model}`, payload, {
+        ? () => env.AI.run(bindingModel, payload, {
             returnRawResponse: true,
             gateway: { id: env.GATEWAY_ID, skipCache: true, collectLog: true,
               retries: { maxAttempts: 1 }, metadata },
@@ -82,7 +81,8 @@ export class LatencySample {
       // any following call as a successful first-call sample.
       if (!timing.ok) break;
     }
-    const sample = { ...config, isolateId, instanceId: this.instanceId,
+    const sample = { ...config, provider, bindingModel, workerVersion: env.VERSION?.id ?? null,
+      isolateId, instanceId: this.instanceId,
       gatewayId: env.GATEWAY_ID, endpoint, payload, responseCache: 'bypassed', maxAttempts: 1, results };
     console.log(JSON.stringify({ event: 'latency-sample', ...sample }));
     return json(sample);
